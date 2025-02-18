@@ -1,10 +1,14 @@
 const std = @import("std");
 const FileLine = @import("fileline.zig").FileLine;
 const Parser = @import("regex/parser.zig").Parser;
+const ParseError = @import("regex/parser.zig").ParseError;
 const Nfa = @import("regex/nfa.zig").Nfa;
 
 pub fn mgrep(allocator: std.mem.Allocator, outw: anytype, pattern: []const u8, filename: []const u8) !void {
-    var file = try std.fs.cwd().openFile(filename, .{});
+    var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+        std.log.err("{}", .{err});
+        std.process.exit(1);
+    };
     defer file.close();
 
     var buf = std.ArrayList(u8).init(allocator);
@@ -16,7 +20,10 @@ pub fn mgrep(allocator: std.mem.Allocator, outw: anytype, pattern: []const u8, f
 
     const parser = Parser.init(allocator);
     defer parser.deinit();
-    const ls = parser.parse(pattern);
+    const ls = parser.parse(pattern) catch |err| {
+        std.log.err("{}", .{err});
+        std.process.exit(1);
+    };
     var nfa = Nfa.fromTokens(allocator, ls.items);
     defer nfa.deinit();
 

@@ -1,11 +1,11 @@
 const std = @import("std");
 const Nfa = @import("nfa.zig").Nfa;
 
-pub const TokenType = enum { literal, group, repeat, alt, range };
-pub const Range = std.bit_set.IntegerBitSet(std.math.maxInt(u8));
-
 pub const INF = std.math.maxInt(usize);
 pub const MAX_U8 = std.math.maxInt(u8);
+
+const TokenType = enum { literal, group, repeat, alt, range };
+pub const Range = std.bit_set.IntegerBitSet(MAX_U8);
 
 pub const RepeatToken = struct { min: usize, max: usize, token: *Token };
 pub const AltToken = struct { left: *Token, right: *Token };
