@@ -1,45 +1,56 @@
 const std = @import("std");
-const FileLine = @import("fileline.zig").FileLine;
-const Parser = @import("regex/parser.zig").Parser;
-const ParseError = @import("regex/parser.zig").ParseError;
+const RegexParser = @import("regex/parser.zig").Parser;
 const Nfa = @import("regex/nfa.zig").Nfa;
+const MgrepParser = @import("parser.zig").Parser;
+const MgrepConfig = @import("parser.zig").MgrepConfig;
 
-pub fn mgrep(allocator: std.mem.Allocator, outw: anytype, pattern: []const u8, filename: []const u8) !void {
-    var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
-        std.log.err("{}", .{err});
-        std.process.exit(1);
-    };
-    defer file.close();
+const MgrepLinebufSize: usize = 1024;
+const MgrepLinebuf = @import("linebuffer.zig").Linebuffer(MgrepLinebufSize);
 
-    var buf = std.ArrayList(u8).init(allocator);
-    defer buf.deinit();
+pub fn mgrep(allocator: std.mem.Allocator, outw: anytype, config: MgrepConfig) !void {
+    std.debug.assert(config.pattern != null);
+    std.debug.assert(config.text != null or config.filenames != null);
 
-    var buffered = std.io.bufferedReader(file.reader());
-    var reader = buffered.reader();
-    var line_count: usize = 0;
+    var inputbuf = std.ArrayList(u8).init(allocator);
+    defer inputbuf.deinit();
 
-    const parser = Parser.init(allocator);
-    defer parser.deinit();
-    const ls = parser.parse(pattern) catch |err| {
-        std.log.err("{}", .{err});
-        std.process.exit(1);
-    };
-    var nfa = Nfa.fromTokens(allocator, ls.items);
-    defer nfa.deinit();
+    for (config.filenames.?) |filename| {
+        var linebuf = MgrepLinebuf.init(allocator, filename);
+        defer linebuf.deinit();
 
-    while (true) {
-        reader.streamUntilDelimiter(buf.writer(), '\n', null) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
+        var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+            std.log.err("{}", .{err});
+            std.process.exit(1);
         };
-        line_count += 1;
-        const line = try buf.toOwnedSlice();
-        defer allocator.free(line);
-        const fileline = FileLine.init(line_count, filename, line);
-        if (nfa.partialMatch(fileline.line)) {
-            try fileline.print(outw);
+        defer file.close();
+        var buffered = std.io.bufferedReader(file.reader());
+        var reader = buffered.reader();
+
+        const parser = RegexParser.init(allocator);
+        defer parser.deinit();
+        const ls = parser.parse(config.pattern.?) catch |err| {
+            std.log.err("{}", .{err});
+            std.process.exit(1);
+        };
+        var nfa = Nfa.fromTokens(allocator, ls.items);
+        defer nfa.deinit();
+
+        while (true) {
+            reader.streamUntilDelimiter(inputbuf.writer(), '\n', null) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return err,
+            };
+            const line = try inputbuf.toOwnedSlice();
+            linebuf.add(line, nfa.partialMatch(line));
+            if (linebuf.isFull()) {
+                try linebuf.print(outw, config);
+                linebuf.reset();
+            }
+            inputbuf.clearRetainingCapacity();
         }
-        buf.clearRetainingCapacity();
+
+        try linebuf.print(outw, config);
+        try linebuf.aggregatePrint(outw, config);
     }
 }
 
@@ -53,9 +64,15 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    if (args.len != 3) {
-        try outw.print("usage: mgrep [pattern] [file]\n", .{});
+    if (args.len == 1) {
+        try outw.print("usage: mgrep [-chlnv] [pattern] [file ...]\n", .{});
         return;
     }
-    try mgrep(allocator, outw, args[1], args[2]);
+
+    var mgrep_parser = MgrepParser.init(args);
+    mgrep_parser.parse() catch |err| {
+        std.log.err("{}", .{err});
+        std.process.exit(1);
+    };
+    try mgrep(allocator, outw, mgrep_parser.config);
 }
