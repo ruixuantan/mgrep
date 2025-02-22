@@ -22,6 +22,8 @@ const Node = struct {
         return node;
     }
 
+    // e_transition is ordered
+    // so we can control where transitions to terminal node are located.
     fn insertEpsilonTransition(self: *Node, node: *Node) void {
         self.e_transition.append(node) catch @panic("Error appending node to transition");
     }
@@ -52,34 +54,58 @@ const Node = struct {
     }
 };
 
+pub const SubstrIndex = struct { start: usize, end: usize };
+const SubstrIndexList = std.ArrayList(SubstrIndex);
+
 const Matcher = struct {
-    allocator: std.mem.Allocator,
     string: []const u8,
     start: *Node,
     end: *Node,
 
-    fn dfsPartialMatch(self: Matcher, node: *Node, pos: usize) bool {
+    fn init(string: []const u8, start: *Node, end: *Node) Matcher {
+        return .{ .string = string, .start = start, .end = end };
+    }
+
+    fn match(self: Matcher, node: *Node, i: usize) ?usize {
         if (node == self.end) {
-            return true;
+            return i;
         }
-        if (pos >= self.string.len) {
-            return false;
+        if (i >= self.string.len) {
+            return null;
         }
 
-        const next_node = node.transition.get(self.string[pos]);
+        const next_node = node.transition.get(self.string[i]);
         if (next_node != null) {
-            if (self.dfsPartialMatch(next_node.?, pos + 1)) {
-                return true;
+            const res = self.match(next_node.?, i + 1);
+            if (res != null) {
+                return res.?;
             }
         }
 
         for (node.e_transition.items) |e_node| {
-            if (self.dfsPartialMatch(e_node, pos)) {
-                return true;
+            const res = self.match(e_node, i);
+            if (res != null) {
+                return res.?;
             }
         }
+        return null;
+    }
 
-        return self.dfsPartialMatch(self.start, pos + 1);
+    fn matchAll(self: *Matcher, allocator: std.mem.Allocator) []const SubstrIndex {
+        var ls = SubstrIndexList.init(allocator);
+        var i: usize = 0;
+        while (i < self.string.len) {
+            const j = self.match(self.start, i);
+            if (j == null) {
+                i += 1;
+            } else {
+                // condition happens when there is an epsilon transition to the terminal node
+                const end = if (j.? == i) j.? + 1 else j.?;
+                ls.append(.{ .start = i, .end = end }) catch @panic("Error appending to list of substring indexes");
+                i = end;
+            }
+        }
+        return ls.toOwnedSlice() catch @panic("Error converting list of substring indexes to slice");
     }
 };
 
@@ -110,6 +136,8 @@ pub const Nfa = struct {
                 return fromTokens(allocator, group);
             },
             .repeat => |r| {
+                var start = Node.init(allocator);
+                const end = Node.init(allocator);
                 var nfa = fromToken(allocator, token.repeat.token);
                 var count = r.max;
                 if (r.max == INF) {
@@ -121,19 +149,27 @@ pub const Nfa = struct {
                 for (1..count) |j| {
                     const other = fromToken(allocator, token.repeat.token);
                     nfa.end.insertEpsilonTransition(other.start);
-                    // Add epsilon transition to end for nodes greater than min count
-                    if (j >= r.min) terminal_nodes.append(nfa.end) catch @panic("Error appending terminal node");
+                    if (j >= r.min) {
+                        terminal_nodes.append(nfa.end) catch @panic("Error appending terminal node");
+                    }
                     nfa.end = other.end;
                 }
 
+                // adding terminal epsilon transitions at the end results in greedy match
                 for (terminal_nodes.items) |node| {
-                    node.insertEpsilonTransition(nfa.end);
+                    node.insertEpsilonTransition(end);
                 }
 
-                if (r.min == 0) nfa.start.insertEpsilonTransition(nfa.end);
-                if (r.max == INF) nfa.end.insertEpsilonTransition(nfa.start);
+                start.insertEpsilonTransition(nfa.start);
+                if (r.min == 0) {
+                    start.insertEpsilonTransition(end);
+                }
+                if (r.max == INF) {
+                    nfa.end.insertEpsilonTransition(nfa.start);
+                }
+                nfa.end.insertEpsilonTransition(end);
 
-                return nfa;
+                return .{ .allocator = allocator, .start = start, .end = end };
             },
             .alt => |a| {
                 var start = Node.init(allocator);
@@ -160,9 +196,9 @@ pub const Nfa = struct {
         unreachable;
     }
 
-    pub fn partialMatch(self: Nfa, string: []const u8) bool {
-        const matcher = Matcher{ .allocator = self.allocator, .string = string, .start = self.start, .end = self.end };
-        return matcher.dfsPartialMatch(self.start, 0);
+    pub fn matchAll(self: Nfa, string: []const u8) []const SubstrIndex {
+        var matcher = Matcher.init(string, self.start, self.end);
+        return matcher.matchAll(self.allocator);
     }
 
     pub fn deinit(self: *Nfa) void {
@@ -176,7 +212,9 @@ pub const Nfa = struct {
 
         while (stack.items.len != 0) {
             var curr = stack.pop();
-            if (visited.get(@intFromPtr(curr)) != null) continue;
+            if (visited.get(@intFromPtr(curr)) != null) {
+                continue;
+            }
             visited.put(@intFromPtr(curr), curr) catch @panic("Error inserting into deinit dfs hashmap");
 
             const curr_neighbors = curr.neighborNodes(self.allocator);
@@ -222,17 +260,13 @@ test "match Nfa with literal regex" {
     var nfa = Nfa.fromTokens(allocator, &tokens);
     defer nfa.deinit();
 
-    const mid = "pos_as_pos";
-    try std.testing.expect(nfa.partialMatch(mid));
+    const mid = nfa.matchAll("pos_as_pos_as");
+    defer nfa.allocator.free(mid);
+    const mid_res = [_]SubstrIndex{ SubstrIndex{ .start = 4, .end = 6 }, SubstrIndex{ .start = 11, .end = 13 } };
+    try std.testing.expectEqualSlices(SubstrIndex, &mid_res, mid);
 
-    const end = "pos_as";
-    try std.testing.expect(nfa.partialMatch(end));
-
-    const none = "none";
-    try std.testing.expect(!nfa.partialMatch(none));
-
-    const disjunct = "abs";
-    try std.testing.expect(!nfa.partialMatch(disjunct));
+    try std.testing.expectEqual(0, nfa.matchAll("none").len);
+    try std.testing.expectEqual(0, nfa.matchAll("abs").len);
 }
 
 test "match Nfa with repeating regex" {
@@ -248,17 +282,18 @@ test "match Nfa with repeating regex" {
     var nfa = Nfa.fromTokens(allocator, &tokens);
     defer nfa.deinit();
 
-    const min = "baac";
-    try std.testing.expect(nfa.partialMatch(min));
+    const min = nfa.matchAll("baac");
+    defer nfa.allocator.free(min);
+    const min_res = [_]SubstrIndex{SubstrIndex{ .start = 1, .end = 3 }};
+    try std.testing.expectEqualSlices(SubstrIndex, &min_res, min);
 
-    const max = "baaaac";
-    try std.testing.expect(nfa.partialMatch(max));
+    const max = nfa.matchAll("baaaac");
+    defer nfa.allocator.free(max);
+    const max_res = [_]SubstrIndex{SubstrIndex{ .start = 1, .end = 5 }};
+    try std.testing.expectEqualSlices(SubstrIndex, &max_res, max);
 
-    const none = "bc";
-    try std.testing.expect(!nfa.partialMatch(none));
-
-    const less = "bac";
-    try std.testing.expect(!nfa.partialMatch(less));
+    try std.testing.expectEqual(0, nfa.matchAll("bc").len);
+    try std.testing.expectEqual(0, nfa.matchAll("bac").len);
 }
 
 test "match Nfa with fixed repeating regex" {
@@ -274,11 +309,12 @@ test "match Nfa with fixed repeating regex" {
     var nfa = Nfa.fromTokens(allocator, &tokens);
     defer nfa.deinit();
 
-    const lt = "bac";
-    try std.testing.expect(!nfa.partialMatch(lt));
+    try std.testing.expectEqual(0, nfa.matchAll("bac").len);
 
-    const eq = "baac";
-    try std.testing.expect(nfa.partialMatch(eq));
+    const eq = nfa.matchAll("baac");
+    defer nfa.allocator.free(eq);
+    const eq_res = [_]SubstrIndex{SubstrIndex{ .start = 1, .end = 3 }};
+    try std.testing.expectEqualSlices(SubstrIndex, &eq_res, eq);
 }
 
 test "match Nfa with * regex" {
@@ -294,11 +330,15 @@ test "match Nfa with * regex" {
     var nfa = Nfa.fromTokens(allocator, &tokens);
     defer nfa.deinit();
 
-    const none = "bc";
-    try std.testing.expect(nfa.partialMatch(none));
+    const none = nfa.matchAll("bc");
+    defer nfa.allocator.free(none);
+    const none_res = [_]SubstrIndex{ SubstrIndex{ .start = 0, .end = 1 }, SubstrIndex{ .start = 1, .end = 2 } };
+    try std.testing.expectEqualSlices(SubstrIndex, &none_res, none);
 
-    const some = "baac";
-    try std.testing.expect(nfa.partialMatch(some));
+    const some = nfa.matchAll("baac");
+    defer nfa.allocator.free(some);
+    const some_res = [_]SubstrIndex{ SubstrIndex{ .start = 0, .end = 1 }, SubstrIndex{ .start = 1, .end = 3 }, SubstrIndex{ .start = 3, .end = 4 } };
+    try std.testing.expectEqualSlices(SubstrIndex, &some_res, some);
 }
 
 test "match Nfa with + regex" {
@@ -314,11 +354,12 @@ test "match Nfa with + regex" {
     var nfa = Nfa.fromTokens(allocator, &tokens);
     defer nfa.deinit();
 
-    const none = "bc";
-    try std.testing.expect(!nfa.partialMatch(none));
+    try std.testing.expectEqual(0, nfa.matchAll("bc").len);
 
-    const some = "baac";
-    try std.testing.expect(nfa.partialMatch(some));
+    const some = nfa.matchAll("baac");
+    defer nfa.allocator.free(some);
+    const some_res = [_]SubstrIndex{SubstrIndex{ .start = 1, .end = 3 }};
+    try std.testing.expectEqualSlices(SubstrIndex, &some_res, some);
 }
 
 test "match Nfa with ? regex" {
@@ -334,11 +375,15 @@ test "match Nfa with ? regex" {
     var nfa = Nfa.fromTokens(allocator, &tokens);
     defer nfa.deinit();
 
-    const none = "bc";
-    try std.testing.expect(nfa.partialMatch(none));
+    const none = nfa.matchAll("bc");
+    defer nfa.allocator.free(none);
+    const none_res = [_]SubstrIndex{ SubstrIndex{ .start = 0, .end = 1 }, SubstrIndex{ .start = 1, .end = 2 } };
+    try std.testing.expectEqualSlices(SubstrIndex, &none_res, none);
 
-    const some = "bac";
-    try std.testing.expect(nfa.partialMatch(some));
+    const some = nfa.matchAll("bac");
+    defer nfa.allocator.free(some);
+    const some_res = [_]SubstrIndex{ SubstrIndex{ .start = 0, .end = 1 }, SubstrIndex{ .start = 1, .end = 2 }, SubstrIndex{ .start = 2, .end = 3 } };
+    try std.testing.expectEqualSlices(SubstrIndex, &some_res, some);
 }
 
 test "match Nfa with alt regex" {
@@ -357,11 +402,15 @@ test "match Nfa with alt regex" {
     var nfa = Nfa.fromTokens(allocator, &tokens);
     defer nfa.deinit();
 
-    const a = "ac";
-    try std.testing.expect(nfa.partialMatch(a));
+    const a = nfa.matchAll("ac");
+    defer nfa.allocator.free(a);
+    const a_res = [_]SubstrIndex{SubstrIndex{ .start = 0, .end = 1 }};
+    try std.testing.expectEqualSlices(SubstrIndex, &a_res, a);
 
-    const b = "bc";
-    try std.testing.expect(nfa.partialMatch(b));
+    const b = nfa.matchAll("bc");
+    defer nfa.allocator.free(b);
+    const b_res = [_]SubstrIndex{SubstrIndex{ .start = 0, .end = 1 }};
+    try std.testing.expectEqualSlices(SubstrIndex, &b_res, b);
 }
 
 test "match Nfa with repeat regex" {
@@ -378,9 +427,10 @@ test "match Nfa with repeat regex" {
     var nfa = Nfa.fromTokens(allocator, &tokens);
     defer nfa.deinit();
 
-    const lowercase = "abcdef";
-    try std.testing.expect(!nfa.partialMatch(lowercase));
+    try std.testing.expectEqual(0, nfa.matchAll("abcdef").len);
 
-    const oneuppercase = "abcdefZwxyz";
-    try std.testing.expect(nfa.partialMatch(oneuppercase));
+    const oneuppercase = nfa.matchAll("abcdefZwxyz");
+    defer nfa.allocator.free(oneuppercase);
+    const oneuppercase_res = [_]SubstrIndex{SubstrIndex{ .start = 6, .end = 7 }};
+    try std.testing.expectEqualSlices(SubstrIndex, &oneuppercase_res, oneuppercase);
 }

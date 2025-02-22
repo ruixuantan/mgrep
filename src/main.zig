@@ -4,8 +4,8 @@ const Nfa = @import("regex/nfa.zig").Nfa;
 const MgrepParser = @import("parser.zig").Parser;
 const MgrepConfig = @import("parser.zig").MgrepConfig;
 
-const MgrepLinebufSize: usize = 1024;
-const MgrepLinebuf = @import("linebuffer.zig").Linebuffer(MgrepLinebufSize);
+const MgrepFilelinebufSize: usize = 1024;
+const MgrepFilelinebuf = @import("filelinebuffer.zig").Filelinebuffer(MgrepFilelinebufSize);
 
 pub fn mgrep(allocator: std.mem.Allocator, outw: anytype, config: MgrepConfig) !void {
     std.debug.assert(config.pattern != null);
@@ -15,8 +15,8 @@ pub fn mgrep(allocator: std.mem.Allocator, outw: anytype, config: MgrepConfig) !
     defer inputbuf.deinit();
 
     for (config.filenames.?) |filename| {
-        var linebuf = MgrepLinebuf.init(allocator, filename);
-        defer linebuf.deinit();
+        var filelinebuf = MgrepFilelinebuf.init(allocator, filename);
+        defer filelinebuf.deinit();
 
         var file = std.fs.cwd().openFile(filename, .{}) catch |err| {
             std.log.err("{}", .{err});
@@ -41,16 +41,16 @@ pub fn mgrep(allocator: std.mem.Allocator, outw: anytype, config: MgrepConfig) !
                 else => return err,
             };
             const line = try inputbuf.toOwnedSlice();
-            linebuf.add(line, nfa.partialMatch(line));
-            if (linebuf.isFull()) {
-                try linebuf.print(outw, config);
-                linebuf.reset();
+            try filelinebuf.add(line, nfa.matchAll(line));
+            if (filelinebuf.isFull()) {
+                try filelinebuf.print(outw, config);
+                filelinebuf.reset();
             }
             inputbuf.clearRetainingCapacity();
         }
 
-        try linebuf.print(outw, config);
-        try linebuf.aggregatePrint(outw, config);
+        try filelinebuf.print(outw, config);
+        try filelinebuf.aggregatePrint(outw, config);
     }
 }
 
