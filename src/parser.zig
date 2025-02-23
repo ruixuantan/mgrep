@@ -79,13 +79,15 @@ pub const Parser = struct {
     }
 
     fn parseConfig(self: *Parser) ParseError!void {
-        switch (self.args[self.pos][1]) {
-            'c' => self.config.count = true,
-            'h' => self.config.filename_display = false,
-            'l' => self.config.filename_list = true,
-            'n' => self.config.line_number_display = true,
-            'v' => self.config.negation = true,
-            else => return ParseError.UnrecognizedConfig,
+        for (1..self.args[self.pos].len) |i| {
+            switch (self.args[self.pos][i]) {
+                'c' => self.config.count = true,
+                'h' => self.config.filename_display = false,
+                'l' => self.config.filename_list = true,
+                'n' => self.config.line_number_display = true,
+                'v' => self.config.negation = true,
+                else => return ParseError.UnrecognizedConfig,
+            }
         }
     }
 
@@ -119,6 +121,18 @@ test "test parse single file with config" {
 
 test "test parse single file with multiple config" {
     var input = [_][]const u8{ "mgrep", "-v", "-n", "asdf", "asdf.txt" };
+    var parser = try Parser.init(std.testing.allocator, &input);
+    defer parser.deinit();
+    try parser.parse();
+    try std.testing.expectEqual(true, parser.config.line_number_display);
+    try std.testing.expectEqual(true, parser.config.negation);
+    try std.testing.expectEqualStrings("asdf", parser.config.pattern.?);
+    try std.testing.expectEqual(1, parser.config.filetypes.items.len);
+    try std.testing.expectEqualStrings("asdf.txt", parser.config.filetypes.items[0].file);
+}
+
+test "test parse single file with multiple concatenated config" {
+    var input = [_][]const u8{ "mgrep", "-vn", "asdf", "asdf.txt" };
     var parser = try Parser.init(std.testing.allocator, &input);
     defer parser.deinit();
     try parser.parse();
