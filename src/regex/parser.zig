@@ -51,7 +51,7 @@ pub const Parser = struct {
             '|' => try self.parseAlt(regex),
             '(' => try self.parseGroup(regex),
             '{' => try self.parseRepeatSpecified(regex),
-            '*', '+', '?' => self.parseRepeat(regex),
+            '*', '+', '?' => try self.parseRepeat(regex),
             '.' => {
                 const range = Range.initFull();
                 const t = Token.init(self.allocator);
@@ -121,7 +121,9 @@ pub const Parser = struct {
             if (min == 0) {
                 min = regex[self.pos];
             } else {
-                if (regex[self.pos] == '-') continue;
+                if (regex[self.pos] == '-') {
+                    continue;
+                }
 
                 if (regex[self.pos - 1] == '-') { // handle [a-z] cases
                     const max = regex[self.pos];
@@ -135,7 +137,9 @@ pub const Parser = struct {
                 min = 0;
             }
         }
-        if (self.pos >= regex.len) return ParseError.MissingClosingRangeBracket;
+        if (self.pos >= regex.len) {
+            return ParseError.MissingClosingRangeBracket;
+        }
 
         const t = Token.init(self.allocator);
         t.* = .{ .range = range };
@@ -161,7 +165,11 @@ pub const Parser = struct {
         self.tokens.append(t) catch @panic("Error appending token");
     }
 
-    fn parseRepeat(self: *Parser, regex: []const u8) void {
+    fn parseRepeat(self: *Parser, regex: []const u8) ParseError!void {
+        if (self.tokens.items.len == 0) {
+            return ParseError.RepeatTokenAtStart;
+        }
+
         const prev = self.tokens.pop();
         var rt = RepeatToken{ .min = 0, .max = INF, .token = prev };
         switch (regex[self.pos]) {
@@ -176,12 +184,16 @@ pub const Parser = struct {
     }
 
     fn parseRepeatSpecified(self: *Parser, regex: []const u8) ParseError!void {
-        if (self.pos == 0) return ParseError.RepeatTokenAtStart;
+        if (self.pos == 0) {
+            return ParseError.RepeatTokenAtStart;
+        }
 
         const start = self.pos + 1;
         while (self.pos < regex.len and regex[self.pos] != '}') : (self.pos += 1) {}
 
-        if (self.pos >= regex.len) return ParseError.MissingClosingRepeatBracket;
+        if (self.pos >= regex.len) {
+            return ParseError.MissingClosingRepeatBracket;
+        }
 
         const end = self.pos;
         var it = std.mem.split(u8, regex[start..end], ",");
@@ -203,7 +215,9 @@ pub const Parser = struct {
                 max = std.fmt.parseUnsigned(usize, str_max.?, 10) catch return ParseError.InvalidRangeNumber;
             }
         }
-        if (min > max) return ParseError.RangeMinGreaterThanMax;
+        if (min > max) {
+            return ParseError.RangeMinGreaterThanMax;
+        }
 
         const t = Token.init(self.allocator);
         const prev = self.tokens.pop();
@@ -217,7 +231,9 @@ pub const Parser = struct {
 
         while (regex[grp_parser.pos] != ')') {
             try grp_parser.process(regex);
-            if (grp_parser.pos >= regex.len) return ParseError.MissingClosingGroupBracket;
+            if (grp_parser.pos >= regex.len) {
+                return ParseError.MissingClosingGroupBracket;
+            }
         }
         self.pos = grp_parser.pos;
         const grp_tokens = grp_parser.tokens.toOwnedSlice() catch @panic("Error converting group token to slice");
