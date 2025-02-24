@@ -1,6 +1,7 @@
 const std = @import("std");
 const Token = @import("token.zig").Token;
 const TokenList = @import("token.zig").TokenList;
+const RepeatType = @import("token.zig").RepeatType;
 const RepeatToken = @import("token.zig").RepeatToken;
 const AltToken = @import("token.zig").AltToken;
 const Range = @import("token.zig").Range;
@@ -155,7 +156,12 @@ pub const Parser = struct {
         while (right_parser.pos < regex.len and regex[right_parser.pos] != ')') {
             try right_parser.process(regex);
         }
+
         self.pos = right_parser.pos;
+        if (right_parser.pos < regex.len and regex[right_parser.pos] == ')') {
+            self.pos -= 1;
+        }
+
         const right_tokens = right_parser.tokens.toOwnedSlice() catch @panic("Error converting right token to slice");
         const right = Token.init(self.allocator);
         right.* = .{ .group = right_tokens };
@@ -171,13 +177,18 @@ pub const Parser = struct {
         }
 
         const prev = self.tokens.pop();
-        var rt = RepeatToken{ .min = 0, .max = INF, .token = prev };
+        var rt = RepeatToken{ .min = 0, .max = INF, .token = prev, .type = RepeatType.greedy };
         switch (regex[self.pos]) {
             '*' => {},
             '+' => rt.min = 1,
             '?' => rt.max = 1,
             else => unreachable,
         }
+        if (self.pos + 1 < regex.len and regex[self.pos + 1] == '?') {
+            self.pos += 1;
+            rt.type = RepeatType.lazy;
+        }
+
         const t = Token.init(self.allocator);
         t.* = .{ .repeat = rt };
         self.tokens.append(t) catch @panic("Error appending token");
@@ -187,6 +198,7 @@ pub const Parser = struct {
         if (self.pos == 0) {
             return ParseError.RepeatTokenAtStart;
         }
+        const prev = self.tokens.pop();
 
         const start = self.pos + 1;
         while (self.pos < regex.len and regex[self.pos] != '}') : (self.pos += 1) {}
@@ -219,9 +231,14 @@ pub const Parser = struct {
             return ParseError.RangeMinGreaterThanMax;
         }
 
+        var rt = RepeatToken{ .min = min, .max = max, .token = prev, .type = RepeatType.greedy };
+        if (self.pos + 1 < regex.len and regex[self.pos + 1] == '?') {
+            self.pos += 1;
+            rt.type = RepeatType.lazy;
+        }
+
         const t = Token.init(self.allocator);
-        const prev = self.tokens.pop();
-        t.* = .{ .repeat = RepeatToken{ .min = min, .max = max, .token = prev } };
+        t.* = .{ .repeat = rt };
         self.tokens.append(t) catch @panic("Error appending token");
     }
 
@@ -283,6 +300,7 @@ test "parse repeats" {
     try std.testing.expectEqual(2, star_ls.items.len);
     try std.testing.expectEqual(0, star_ls.items[1].repeat.min);
     try std.testing.expectEqual(INF, star_ls.items[1].repeat.max);
+    try std.testing.expectEqual(RepeatType.greedy, star_ls.items[1].repeat.type);
     try std.testing.expectEqual('s', star_ls.items[1].repeat.token.literal);
 
     const plus_parser = Parser.init(allocator);
@@ -290,6 +308,7 @@ test "parse repeats" {
     const plus_ls = try plus_parser.parse("as+");
     try std.testing.expectEqual(1, plus_ls.items[1].repeat.min);
     try std.testing.expectEqual(INF, plus_ls.items[1].repeat.max);
+    try std.testing.expectEqual(RepeatType.greedy, plus_ls.items[1].repeat.type);
     try std.testing.expectEqual('s', plus_ls.items[1].repeat.token.literal);
 
     const qn_parser = Parser.init(allocator);
@@ -297,7 +316,16 @@ test "parse repeats" {
     const qn_ls = try qn_parser.parse("as?");
     try std.testing.expectEqual(0, qn_ls.items[1].repeat.min);
     try std.testing.expectEqual(1, qn_ls.items[1].repeat.max);
+    try std.testing.expectEqual(RepeatType.greedy, qn_ls.items[1].repeat.type);
     try std.testing.expectEqual('s', qn_ls.items[1].repeat.token.literal);
+
+    const lazy_parser = Parser.init(allocator);
+    defer lazy_parser.deinit();
+    const lazy_ls = try lazy_parser.parse("a*?");
+    try std.testing.expectEqual(0, lazy_ls.items[0].repeat.min);
+    try std.testing.expectEqual(INF, lazy_ls.items[0].repeat.max);
+    try std.testing.expectEqual(RepeatType.lazy, lazy_ls.items[0].repeat.type);
+    try std.testing.expectEqual('a', lazy_ls.items[0].repeat.token.literal);
 }
 
 test "parse specified repeat" {
@@ -309,6 +337,7 @@ test "parse specified repeat" {
     try std.testing.expectEqual(2, ls.items.len);
     try std.testing.expectEqual(1, ls.items[1].repeat.min);
     try std.testing.expectEqual(100, ls.items[1].repeat.max);
+    try std.testing.expectEqual(RepeatType.greedy, ls.items[1].repeat.type);
     try std.testing.expectEqual('s', ls.items[1].repeat.token.literal);
 
     const single_parser = Parser.init(allocator);
@@ -316,6 +345,7 @@ test "parse specified repeat" {
     const single_ls = try single_parser.parse("a{423}s");
     try std.testing.expectEqual(423, single_ls.items[0].repeat.min);
     try std.testing.expectEqual(423, single_ls.items[0].repeat.max);
+    try std.testing.expectEqual(RepeatType.greedy, single_ls.items[0].repeat.type);
     try std.testing.expectEqual('a', single_ls.items[0].repeat.token.literal);
 
     const min_parser = Parser.init(allocator);
@@ -323,6 +353,7 @@ test "parse specified repeat" {
     const min_ls = try min_parser.parse("a{2,}s");
     try std.testing.expectEqual(2, min_ls.items[0].repeat.min);
     try std.testing.expectEqual(INF, min_ls.items[0].repeat.max);
+    try std.testing.expectEqual(RepeatType.greedy, min_ls.items[0].repeat.type);
     try std.testing.expectEqual('a', min_ls.items[0].repeat.token.literal);
 
     const max_parser = Parser.init(allocator);
@@ -330,7 +361,16 @@ test "parse specified repeat" {
     const max_ls = try max_parser.parse("a{,3}s");
     try std.testing.expectEqual(0, max_ls.items[0].repeat.min);
     try std.testing.expectEqual(3, max_ls.items[0].repeat.max);
+    try std.testing.expectEqual(RepeatType.greedy, max_ls.items[0].repeat.type);
     try std.testing.expectEqual('a', max_ls.items[0].repeat.token.literal);
+
+    const lazy_parser = Parser.init(allocator);
+    defer lazy_parser.deinit();
+    const lazy_ls = try lazy_parser.parse("a{2,}?");
+    try std.testing.expectEqual(2, lazy_ls.items[0].repeat.min);
+    try std.testing.expectEqual(INF, lazy_ls.items[0].repeat.max);
+    try std.testing.expectEqual(RepeatType.lazy, lazy_ls.items[0].repeat.type);
+    try std.testing.expectEqual('a', lazy_ls.items[0].repeat.token.literal);
 }
 
 test "parse alt" {

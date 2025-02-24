@@ -6,7 +6,9 @@ pub const MAX_U8 = std.math.maxInt(u8);
 
 pub const Range = std.bit_set.IntegerBitSet(MAX_U8);
 
-pub const RepeatToken = struct { min: usize, max: usize, token: *Token };
+pub const RepeatType = enum { greedy, lazy };
+
+pub const RepeatToken = struct { min: usize, max: usize, token: *Token, type: RepeatType };
 pub const AltToken = struct { left: *Token, right: *Token };
 
 pub const Token = union(enum) {
@@ -49,7 +51,11 @@ pub const Token = union(enum) {
                 std.debug.print(")", .{});
             },
             .repeat => |r| {
-                std.debug.print("(Repeat min: {d}, max: {d}, token: ", .{ r.min, r.max });
+                const repeat_type_str = switch (r.type) {
+                    RepeatType.greedy => "greedy",
+                    RepeatType.lazy => "lazy",
+                };
+                std.debug.print("(Repeat min: {d}, max: {d}, type: {s}, token: ", .{ r.min, r.max, repeat_type_str });
                 r.token.debug_print();
                 std.debug.print(")", .{});
             },

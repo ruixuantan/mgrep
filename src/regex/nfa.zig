@@ -1,5 +1,6 @@
 const std = @import("std");
 const Token = @import("token.zig").Token;
+const RepeatType = @import("token.zig").RepeatType;
 const RepeatToken = @import("token.zig").RepeatToken;
 const AltToken = @import("token.zig").AltToken;
 const Range = @import("token.zig").Range;
@@ -26,6 +27,10 @@ const Node = struct {
     // so we can control where transitions to terminal node are located.
     fn insertEpsilonTransition(self: *Node, node: *Node) void {
         self.e_transition.append(node) catch @panic("Error appending node to transition");
+    }
+
+    fn insertLazyEpsilonTransition(self: *Node, node: *Node) void {
+        self.e_transition.insert(0, node) catch @panic("Error inserting node to transition");
     }
 
     fn insertTransition(self: *Node, edge: u8, node: *Node) void {
@@ -156,18 +161,28 @@ pub const Nfa = struct {
                 }
 
                 // adding terminal epsilon transitions at the end results in greedy match
+                // vice versa for lazy match
                 for (terminal_nodes.items) |node| {
-                    node.insertEpsilonTransition(end);
+                    switch (r.type) {
+                        RepeatType.greedy => node.insertEpsilonTransition(end),
+                        RepeatType.lazy => node.insertLazyEpsilonTransition(end),
+                    }
                 }
 
                 start.insertEpsilonTransition(nfa.start);
                 if (r.min == 0) {
-                    start.insertEpsilonTransition(end);
+                    switch (r.type) {
+                        RepeatType.greedy => start.insertEpsilonTransition(end),
+                        RepeatType.lazy => start.insertLazyEpsilonTransition(end),
+                    }
                 }
                 if (r.max == INF) {
                     nfa.end.insertEpsilonTransition(nfa.start);
                 }
-                nfa.end.insertEpsilonTransition(end);
+                switch (r.type) {
+                    RepeatType.greedy => nfa.end.insertEpsilonTransition(end),
+                    RepeatType.lazy => nfa.end.insertLazyEpsilonTransition(end),
+                }
 
                 return .{ .allocator = allocator, .start = start, .end = end };
             },
@@ -274,7 +289,7 @@ test "match Nfa with repeating regex" {
     const lit_a = Token.init(allocator);
     lit_a.* = .{ .literal = 'a' };
     const repeat_a = Token.init(allocator);
-    repeat_a.* = .{ .repeat = RepeatToken{ .min = 2, .max = 4, .token = lit_a } };
+    repeat_a.* = .{ .repeat = RepeatToken{ .min = 2, .max = 4, .token = lit_a, .type = RepeatType.greedy } };
     defer allocator.destroy(lit_a);
     defer allocator.destroy(repeat_a);
     const tokens = [_]*Token{repeat_a};
@@ -296,12 +311,39 @@ test "match Nfa with repeating regex" {
     try std.testing.expectEqual(0, nfa.matchAll("bac").len);
 }
 
+test "match Nfa with lazy repeating regex" {
+    const allocator = std.testing.allocator;
+    const lit_a = Token.init(allocator);
+    lit_a.* = .{ .literal = 'a' };
+    const repeat_a = Token.init(allocator);
+    repeat_a.* = .{ .repeat = RepeatToken{ .min = 2, .max = 4, .token = lit_a, .type = RepeatType.lazy } };
+    defer allocator.destroy(lit_a);
+    defer allocator.destroy(repeat_a);
+    const tokens = [_]*Token{repeat_a};
+
+    var nfa = Nfa.fromTokens(allocator, &tokens);
+    defer nfa.deinit();
+
+    const min = nfa.matchAll("baac");
+    defer nfa.allocator.free(min);
+    const min_res = [_]SubstrIndex{SubstrIndex{ .start = 1, .end = 3 }};
+    try std.testing.expectEqualSlices(SubstrIndex, &min_res, min);
+
+    const max = nfa.matchAll("baaaac");
+    defer nfa.allocator.free(max);
+    const max_res = [_]SubstrIndex{ SubstrIndex{ .start = 1, .end = 3 }, SubstrIndex{ .start = 3, .end = 5 } };
+    try std.testing.expectEqualSlices(SubstrIndex, &max_res, max);
+
+    try std.testing.expectEqual(0, nfa.matchAll("bc").len);
+    try std.testing.expectEqual(0, nfa.matchAll("bac").len);
+}
+
 test "match Nfa with fixed repeating regex" {
     const allocator = std.testing.allocator;
     const lit_a = Token.init(allocator);
     lit_a.* = .{ .literal = 'a' };
     const repeat_a = Token.init(allocator);
-    repeat_a.* = .{ .repeat = RepeatToken{ .min = 2, .max = 2, .token = lit_a } };
+    repeat_a.* = .{ .repeat = RepeatToken{ .min = 2, .max = 2, .token = lit_a, .type = RepeatType.greedy } };
     defer allocator.destroy(lit_a);
     defer allocator.destroy(repeat_a);
     const tokens = [_]*Token{repeat_a};
@@ -322,7 +364,7 @@ test "match Nfa with * regex" {
     const lit_a = Token.init(allocator);
     lit_a.* = .{ .literal = 'a' };
     const repeat_a = Token.init(allocator);
-    repeat_a.* = .{ .repeat = RepeatToken{ .min = 0, .max = INF, .token = lit_a } };
+    repeat_a.* = .{ .repeat = RepeatToken{ .min = 0, .max = INF, .token = lit_a, .type = RepeatType.greedy } };
     defer allocator.destroy(lit_a);
     defer allocator.destroy(repeat_a);
     const tokens = [_]*Token{repeat_a};
@@ -346,7 +388,7 @@ test "match Nfa with + regex" {
     const lit_a = Token.init(allocator);
     lit_a.* = .{ .literal = 'a' };
     const repeat_a = Token.init(allocator);
-    repeat_a.* = .{ .repeat = RepeatToken{ .min = 1, .max = INF, .token = lit_a } };
+    repeat_a.* = .{ .repeat = RepeatToken{ .min = 1, .max = INF, .token = lit_a, .type = RepeatType.greedy } };
     defer allocator.destroy(lit_a);
     defer allocator.destroy(repeat_a);
     const tokens = [_]*Token{repeat_a};
@@ -362,12 +404,33 @@ test "match Nfa with + regex" {
     try std.testing.expectEqualSlices(SubstrIndex, &some_res, some);
 }
 
+test "match Nfa with lazy + regex" {
+    const allocator = std.testing.allocator;
+    const lit_a = Token.init(allocator);
+    lit_a.* = .{ .literal = 'a' };
+    const repeat_a = Token.init(allocator);
+    repeat_a.* = .{ .repeat = RepeatToken{ .min = 1, .max = INF, .token = lit_a, .type = RepeatType.lazy } };
+    defer allocator.destroy(lit_a);
+    defer allocator.destroy(repeat_a);
+    const tokens = [_]*Token{repeat_a};
+
+    var nfa = Nfa.fromTokens(allocator, &tokens);
+    defer nfa.deinit();
+
+    try std.testing.expectEqual(0, nfa.matchAll("bc").len);
+
+    const some = nfa.matchAll("baac");
+    defer nfa.allocator.free(some);
+    const some_res = [_]SubstrIndex{ SubstrIndex{ .start = 1, .end = 2 }, SubstrIndex{ .start = 2, .end = 3 } };
+    try std.testing.expectEqualSlices(SubstrIndex, &some_res, some);
+}
+
 test "match Nfa with ? regex" {
     const allocator = std.testing.allocator;
     const lit_a = Token.init(allocator);
     lit_a.* = .{ .literal = 'a' };
     const repeat_a = Token.init(allocator);
-    repeat_a.* = .{ .repeat = RepeatToken{ .min = 0, .max = 1, .token = lit_a } };
+    repeat_a.* = .{ .repeat = RepeatToken{ .min = 0, .max = 1, .token = lit_a, .type = RepeatType.greedy } };
     defer allocator.destroy(lit_a);
     defer allocator.destroy(repeat_a);
     const tokens = [_]*Token{repeat_a};

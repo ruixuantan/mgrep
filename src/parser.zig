@@ -1,7 +1,5 @@
 const std = @import("std");
 
-pub const STD_INPUT = "(standard input)";
-
 pub const FileType = union(enum) {
     stdin,
     file: []const u8,
