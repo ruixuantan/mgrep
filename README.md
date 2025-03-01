@@ -20,9 +20,9 @@ Run mgrep on a file:
 ./zig-out/bin/mgrep "pattern" filename.txt
 ```
 
-Run mgrep on multiple files with multiple configs:
+Run mgrep on multiple files/directories with multiple configs:
 ```sh
-./zig-out/bin/mgrep -hn "pattern" filename1.txt filename2.txt
+./zig-out/bin/mgrep -hn "pattern" src/ filename2.txt
 ```
 
 ## Features
@@ -61,7 +61,6 @@ Run mgrep on multiple files with multiple configs:
 | `a*?` | Lazy quantifier |
 
 ### Unavailable features
-* Directory searching
 * Anchors
 * Backreferencing
 * Possessive matching

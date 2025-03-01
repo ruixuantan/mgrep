@@ -29,7 +29,13 @@ pub const MgrepConfig = struct {
         };
     }
 
-    fn deinit(self: *MgrepConfig) void {
+    fn deinit(self: *MgrepConfig, allocator: std.mem.Allocator) void {
+        for (self.filetypes.items) |ft| {
+            switch (ft) {
+                FileType.file => |f| allocator.free(f),
+                else => {},
+            }
+        }
         self.filetypes.deinit();
     }
 };
@@ -41,12 +47,13 @@ pub const ParseError = error{
 };
 
 pub const Parser = struct {
+    allocator: std.mem.Allocator,
     args: [][]const u8,
     pos: usize,
     config: MgrepConfig,
 
     pub fn init(allocator: std.mem.Allocator, args: [][]const u8) !Parser {
-        return .{ .args = args, .pos = 1, .config = try MgrepConfig.init(allocator) };
+        return .{ .allocator = allocator, .args = args, .pos = 1, .config = try MgrepConfig.init(allocator) };
     }
 
     pub fn parse(self: *Parser) !void {
@@ -67,7 +74,12 @@ pub const Parser = struct {
         }
 
         for (self.pos..self.args.len) |i| {
-            try self.config.filetypes.append(FileType{ .file = self.args[i] });
+            const stat = try std.fs.cwd().statFile(self.args[i]);
+            switch (stat.kind) {
+                .directory => try self.getFiles(self.args[i]),
+                .file => try self.config.filetypes.append(FileType{ .file = try self.allocator.dupe(u8, self.args[i]) }),
+                else => std.log.err("{s} detected is of kind: {s}\n", .{ self.args[i], @tagName(stat.kind) }),
+            }
         }
         if (self.config.filetypes.items.len == 1) {
             self.config.filename_display = false;
@@ -89,24 +101,44 @@ pub const Parser = struct {
         }
     }
 
+    fn getFiles(self: *Parser, str_dir: []const u8) !void {
+        var dir = try std.fs.cwd().openDir(str_dir, .{});
+        defer dir.close();
+        var walker = try dir.walk(self.allocator);
+        defer walker.deinit();
+
+        while (try walker.next()) |entry| {
+            var path = try self.allocator.alloc(u8, str_dir.len + entry.path.len);
+            @memcpy(path[0..str_dir.len], str_dir);
+            @memcpy(path[str_dir.len..], entry.path);
+            const stat = try std.fs.cwd().statFile(path);
+            switch (stat.kind) {
+                .file => try self.config.filetypes.append(FileType{ .file = path }),
+                else => {
+                    self.allocator.free(path);
+                },
+            }
+        }
+    }
+
     pub fn deinit(self: *Parser) void {
-        self.config.deinit();
+        self.config.deinit(self.allocator);
     }
 };
 
 test "test parse single file" {
-    var input = [_][]const u8{ "mgrep", "asdf", "asdf.txt" };
+    var input = [_][]const u8{ "mgrep", "asdf", "src/main.zig" };
     var parser = try Parser.init(std.testing.allocator, &input);
     defer parser.deinit();
     try parser.parse();
     try std.testing.expectEqual(false, parser.config.filename_display);
     try std.testing.expectEqualStrings("asdf", parser.config.pattern.?);
     try std.testing.expectEqual(1, parser.config.filetypes.items.len);
-    try std.testing.expectEqualStrings("asdf.txt", parser.config.filetypes.items[0].file);
+    try std.testing.expectEqualStrings("src/main.zig", parser.config.filetypes.items[0].file);
 }
 
 test "test parse single file with config" {
-    var input = [_][]const u8{ "mgrep", "-c", "asdf", "asdf.txt" };
+    var input = [_][]const u8{ "mgrep", "-c", "asdf", "src/main.zig" };
     var parser = try Parser.init(std.testing.allocator, &input);
     defer parser.deinit();
     try parser.parse();
@@ -114,11 +146,11 @@ test "test parse single file with config" {
     try std.testing.expectEqual(false, parser.config.filename_display);
     try std.testing.expectEqualStrings("asdf", parser.config.pattern.?);
     try std.testing.expectEqual(1, parser.config.filetypes.items.len);
-    try std.testing.expectEqualStrings("asdf.txt", parser.config.filetypes.items[0].file);
+    try std.testing.expectEqualStrings("src/main.zig", parser.config.filetypes.items[0].file);
 }
 
 test "test parse single file with multiple config" {
-    var input = [_][]const u8{ "mgrep", "-v", "-n", "asdf", "asdf.txt" };
+    var input = [_][]const u8{ "mgrep", "-v", "-n", "asdf", "src/main.zig" };
     var parser = try Parser.init(std.testing.allocator, &input);
     defer parser.deinit();
     try parser.parse();
@@ -126,11 +158,11 @@ test "test parse single file with multiple config" {
     try std.testing.expectEqual(true, parser.config.negation);
     try std.testing.expectEqualStrings("asdf", parser.config.pattern.?);
     try std.testing.expectEqual(1, parser.config.filetypes.items.len);
-    try std.testing.expectEqualStrings("asdf.txt", parser.config.filetypes.items[0].file);
+    try std.testing.expectEqualStrings("src/main.zig", parser.config.filetypes.items[0].file);
 }
 
 test "test parse single file with multiple concatenated config" {
-    var input = [_][]const u8{ "mgrep", "-vn", "asdf", "asdf.txt" };
+    var input = [_][]const u8{ "mgrep", "-vn", "asdf", "src/main.zig" };
     var parser = try Parser.init(std.testing.allocator, &input);
     defer parser.deinit();
     try parser.parse();
@@ -138,19 +170,19 @@ test "test parse single file with multiple concatenated config" {
     try std.testing.expectEqual(true, parser.config.negation);
     try std.testing.expectEqualStrings("asdf", parser.config.pattern.?);
     try std.testing.expectEqual(1, parser.config.filetypes.items.len);
-    try std.testing.expectEqualStrings("asdf.txt", parser.config.filetypes.items[0].file);
+    try std.testing.expectEqualStrings("src/main.zig", parser.config.filetypes.items[0].file);
 }
 
 test "test parse multiple files" {
-    var input = [_][]const u8{ "mgrep", "asdf", "asdf.txt", "fdsa.txt" };
+    var input = [_][]const u8{ "mgrep", "asdf", "src/main.zig", "build.zig" };
     var parser = try Parser.init(std.testing.allocator, &input);
     defer parser.deinit();
     try parser.parse();
     try std.testing.expectEqual(true, parser.config.filename_display);
     try std.testing.expectEqualStrings("asdf", parser.config.pattern.?);
     try std.testing.expectEqual(2, parser.config.filetypes.items.len);
-    try std.testing.expectEqualStrings("asdf.txt", parser.config.filetypes.items[0].file);
-    try std.testing.expectEqualStrings("fdsa.txt", parser.config.filetypes.items[1].file);
+    try std.testing.expectEqualStrings("src/main.zig", parser.config.filetypes.items[0].file);
+    try std.testing.expectEqualStrings("build.zig", parser.config.filetypes.items[1].file);
 }
 
 test "test parse no files, from std in" {
@@ -162,4 +194,13 @@ test "test parse no files, from std in" {
     try std.testing.expectEqualStrings("asdf", parser.config.pattern.?);
     try std.testing.expectEqual(1, parser.config.filetypes.items.len);
     try std.testing.expectEqual(FileType.stdin, parser.config.filetypes.items[0]);
+}
+
+test "test parse directory" {
+    var input = [_][]const u8{ "mgrep", "asdf", "src/" };
+    var parser = try Parser.init(std.testing.allocator, &input);
+    defer parser.deinit();
+    try parser.parse();
+    try std.testing.expectEqualStrings("asdf", parser.config.pattern.?);
+    try std.testing.expect(parser.config.filetypes.items.len > 0);
 }
