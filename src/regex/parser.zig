@@ -148,7 +148,7 @@ pub const Parser = struct {
     }
 
     fn parseAlt(self: *Parser, regex: []const u8) ParseError!void {
-        const left = self.tokens.pop();
+        const left = self.tokens.pop().?;
 
         const right_parser = Parser.initWithPos(self.allocator, self.pos + 1);
         defer self.allocator.destroy(right_parser);
@@ -176,7 +176,7 @@ pub const Parser = struct {
             return ParseError.RepeatTokenAtStart;
         }
 
-        const prev = self.tokens.pop();
+        const prev = self.tokens.pop().?;
         var rt = RepeatToken{ .min = 0, .max = INF, .token = prev, .type = RepeatType.greedy };
         switch (regex[self.pos]) {
             '*' => {},
@@ -198,7 +198,7 @@ pub const Parser = struct {
         if (self.pos == 0) {
             return ParseError.RepeatTokenAtStart;
         }
-        const prev = self.tokens.pop();
+        const prev = self.tokens.pop().?;
 
         const start = self.pos + 1;
         while (self.pos < regex.len and regex[self.pos] != '}') : (self.pos += 1) {}
@@ -208,7 +208,7 @@ pub const Parser = struct {
         }
 
         const end = self.pos;
-        var it = std.mem.split(u8, regex[start..end], ",");
+        var it = std.mem.splitAny(u8, regex[start..end], ",");
         const str_min = it.next() orelse return ParseError.NoNumbersInRange;
         var min: usize = undefined;
         if (std.mem.eql(u8, str_min, "")) {
@@ -216,7 +216,6 @@ pub const Parser = struct {
         } else {
             min = std.fmt.parseUnsigned(usize, str_min, 10) catch return ParseError.InvalidRangeNumber;
         }
-        std.debug.assert(min != undefined);
 
         var max = min;
         const str_max = it.next();

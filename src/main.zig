@@ -65,6 +65,15 @@ fn mgrep(allocator: std.mem.Allocator, config: MgrepConfig) !void {
     }
 }
 
+fn toSlice(allocator: std.mem.Allocator, args: [][:0]u8) ![][]const u8 {
+    var result = std.ArrayList([]const u8).init(allocator);
+    for (args) |arg| {
+        const dup = try allocator.dupe(u8, arg);
+        try result.append(dup);
+    }
+    return result.toOwnedSlice();
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -80,7 +89,14 @@ pub fn main() !void {
         return;
     }
 
-    var mgrep_parser = try MgrepParser.init(allocator, args);
+    const slice_args = try toSlice(allocator, args);
+    defer {
+        for (slice_args) |arg| {
+            allocator.free(arg);
+        }
+        allocator.free(slice_args);
+    }
+    var mgrep_parser = try MgrepParser.init(allocator, slice_args);
     defer mgrep_parser.deinit();
     mgrep_parser.parse() catch |err| {
         std.log.err("{}", .{err});

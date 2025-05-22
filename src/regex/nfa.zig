@@ -226,7 +226,7 @@ pub const Nfa = struct {
         defer visited.deinit();
 
         while (stack.items.len != 0) {
-            var curr = stack.pop();
+            var curr = stack.pop().?;
             if (visited.get(@intFromPtr(curr)) != null) {
                 continue;
             }
